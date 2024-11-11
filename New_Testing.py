@@ -41,15 +41,12 @@ from sklearn.utils.class_weight import compute_class_weight
 
 # arguments
 parser = argparse.ArgumentParser(description="Test the Best Model on Given Directory with Metrics ", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument("directory", help = 'image directory, must contain at least one model')
-parser.add_argument("log", help = 'experiment log directory, must exist under argument [directory]')
-parser.add_argument("--subset", choices = ['training', 'validation', 'test'], default = 'test', help = 'image subset to test on')
-parser.add_argument("--architecture", choices = ['vgg16', 'inceptionv3', 'resnet50', 'densenet121', 'xception', 'mobilenetv3large', 'inceptionresnetv2', 'nasnetmobile', 'convnexttiny', 'efficientnetv2b3'], default = 'vgg16', help = 'CNN backbbone architecture')
-parser.add_argument("--optimizer", choices = ['SGD', 'Adam', 'RMSprop', 'rAdam'], default = 'SGD', help = 'optimizer')
+parser.add_argument("dataset_dir", help = 'images to be tested on, containing one subfolder for each class')
+parser.add_argument("exp_dir", help = 'experiment log directory, suppressed if [model_path] is provided')
+parser.add_argument("--model_path", default = None, help = 'the model to be tested with; does not plot learning curve if specified')
+parser.add_argument("--save_dir", default = None, help = 'directory to store statistical results and figures')
 parser.add_argument("--batch_size", type = int, default = 8, help = 'batch size')
-parser.add_argument("--freeze_lr", type = str, default = '0.001', help = 'learning rate when base model is freezed at first, fine tune lr will be 1/10 of freeze lr')
-parser.add_argument("--freeze_epochs", type = int, default = 10, help = 'epochs for freezing stage')
-parser.add_argument("--fine_tune_epochs", type = int, default = 90, help = 'epochs for fine tune stage')
+parser.add_argument("--tile_only", action = 'store_true', default = False, help = 'if specified, does not calculate patient level results')
 args = parser.parse_args()
 
 # json encoder for special data types
@@ -65,22 +62,31 @@ class NumpyEncoder(json.JSONEncoder):
 
 # define variables
 classes = ['ALL', 'AML', 'CML', 'Lymphoma', 'MM']
-mother_dir = Path('../') / args.directory
-log_dir = mother_dir / args.log
-test_dir = mother_dir / args.subset
-'''
-freeze_lr = float(args.freeze_lr)
-fine_tune_lr = freeze_lr * 0.1
-fr_lr_str = args.freeze_lr.replace('.', '')
-tu_lr_str = '0' + fr_lr_str
-log_dir = Path(mother_dir / f'{args.architecture}_{args.freeze_epochs}e_{fr_lr_str}_then_{args.fine_tune_epochs}e_{tu_lr_str}_{args.optimizer}')
-'''
-if not log_dir.exists():
-    raise
+test_dir = Path(args.dataset_dir)
+assert test_dir.exists()
+
+# identify the model
+if args.model_path:
+    assert (model_path := Path(args.model_path)).exists()
+else:
+    assert (csv_path := Path(exp_dir / 'log.csv')).exists()
+    log_df = pd.read_csv(csv_path, index_col = 'epoch')
+    best_epoch = log_df['val_accuracy'].idxmax() + 1
+    model_path = Path(exp_dir) / f'best_e{best_epoch}'
+    assert model_path.exists()
+print(f'Loading model: {model_path}')
+model = load_model(model_path)
+
+if args.save_dir:
+    log_dir = Path(args.save_dir)
+    os.makedirs(log_dir, exist_ok = True)
+else:
+    log_dir = model_path.parent
+
 
 # learning curve
-if (log_dir / 'log.csv').exists():
-    log_df = pd.read_csv(log_dir / 'log.csv', index_col = 'epoch')
+if not args.model_path:
+    log_df = pd.read_csv(csv_path, index_col = 'epoch')
     loss = log_df['loss'].to_list()
     val_loss = log_df['val_loss'].to_list()
     acc = log_df['accuracy'].to_list()
@@ -108,7 +114,7 @@ if (log_dir / 'log.csv').exists():
 # Define functions
 def calculate_metrics(y_true, y_pred, f_name, result_dict, classes):
     # initialize
-    cm_norm = confusion_matrix(y_true, y_pred, normalize = 'true')
+    cm_norm = confusion_matrix(y_true, y_pred, normalize = 'true', labels = list(range(len(classes))))
     
     # accuracy = micro f1
     correct = np.equal(y_true, y_pred)
@@ -137,10 +143,10 @@ def calculate_metrics(y_true, y_pred, f_name, result_dict, classes):
     result_dict[f_name]['matthews_CC'] = matthews
     result_dict[f_name]['cohen_kappa'] = cohen
 
-def draw_cm(y_true, y_pred, log_dir, best_epoch, f_name, result_dict, classes):
+def draw_cm(y_true, y_pred, log_dir, f_name, result_dict, classes):
     # initialize
-    cm = confusion_matrix(y_true, y_pred)
-    cm_norm = confusion_matrix(y_true, y_pred, normalize = 'true')
+    cm = confusion_matrix(y_true, y_pred, labels = list(range(len(classes))))
+    cm_norm = confusion_matrix(y_true, y_pred, normalize = 'true', labels = list(range(len(classes))))
     
     fig_cm = plt.figure(figsize = (18, 6))
 
@@ -169,7 +175,7 @@ def draw_cm(y_true, y_pred, log_dir, best_epoch, f_name, result_dict, classes):
     result_dict[f_name]['confusion_matrix'] = cm
     result_dict[f_name]['normalized_cm'] = cm_norm
     
-def draw_roc_curve(y_true, y_pred, log_dir, best_epoch, f_name, result_dict, classes):
+def draw_roc_curve(y_true, y_pred, log_dir, f_name, result_dict, classes):
     roc_data = {}
 
     fig_roc = plt.figure(figsize = (18, 5.6))
@@ -248,27 +254,14 @@ def draw_roc_curve(y_true, y_pred, log_dir, best_epoch, f_name, result_dict, cla
     if f_name not in result_dict:
         result_dict[f_name] = {}
     result_dict[f_name]['roc_data'] = roc_data
-'''
-def metrics(y_true_one_hot, y_pred_ori, log_dir, best_epoch, f_name, result_dict, classes = ['ALL', 'AML', 'CML', 'Lymphoma', 'MM']):
-    calculate_metrics(y_true_one_hot, y_pred_ori, f_name, result_dict, classes)
-    draw_cm(y_true_one_hot, y_pred_ori, log_dir, best_epoch, f_name, result_dict, classes)
-    draw_roc_curve(y_true_one_hot, y_pred_ori, log_dir, best_epoch, f_name, result_dict, classes)
-'''
+
+    
 # Start testing
 test_ds = image_dataset_from_directory(test_dir, batch_size = args.batch_size,
                                        labels = 'inferred', label_mode = 'categorical',
                                        image_size = (512, 512), shuffle = False, follow_links = True)
-# choose the best model
-if (log_dir / 'log.csv').exists():
-    log_df = pd.read_csv(log_dir / 'log.csv', index_col = 'epoch')
-    best_epoch = log_df['val_accuracy'].idxmax() + 1
-else:
-    raise
-    
-print(f'Loading model: e{best_epoch}')
-model = load_model(log_dir / f'best_e{best_epoch}')
-
 test_data = {}
+result_dict = {}
 
 # tile level data
 y_true_one_hot = np.concatenate([y for x, y in test_ds], axis = 0)
@@ -277,108 +270,109 @@ test_data['y_true'] = y_true_one_hot
 test_data['y_pred'] = y_pred_ori
 
 # patient level data
-def weighted_average(y_pred):
-    # TODO: sum of squares / sum for axis == 0
-    matrix = np.array(y_pred)
-    matrix_sum_of_sq = np.square(matrix).sum(axis = 0)
-    matrix_sum = matrix.sum(axis = 0)
-    result = np.divide(matrix_sum_of_sq, matrix_sum, out = np.zeros_like(matrix_sum), where = (matrix_sum != 0))
-    return result
+if not args.tile_only:
+    def weighted_average(y_pred):
+        # TODO: sum of squares / sum for axis == 0
+        matrix = np.array(y_pred)
+        matrix_sum_of_sq = np.square(matrix).sum(axis = 0)
+        matrix_sum = matrix.sum(axis = 0)
+        result = np.divide(matrix_sum_of_sq, matrix_sum, out = np.zeros_like(matrix_sum), where = (matrix_sum != 0))
+        return result
 
-def weighted_sum(y_pred):
-    matrix = np.array(y_pred)
-    matrix_sum = np.square(matrix).sum(axis = 0)
-    result = matrix_sum / matrix_sum.sum(axis = 0, keepdims = 1)
-    return result
+    def weighted_sum(y_pred):
+        matrix = np.array(y_pred)
+        matrix_sum = np.square(matrix).sum(axis = 0)
+        result = matrix_sum / matrix_sum.sum(axis = 0, keepdims = 1)
+        return result
 
-def mode_count(y_pred):
-    matrix = np.array(y_pred)
-    pred_labels = matrix.argmax(axis = 1)
-    mode_cnt = np.zeros((len(classes)), dtype = int)
-    unique, counts = np.unique(pred_labels, return_counts = True)
-    for i, label in enumerate(unique):
-        mode_cnt[int(label)] = counts[i]
-    return mode_cnt
+    def mode_count(y_pred):
+        matrix = np.array(y_pred)
+        pred_labels = matrix.argmax(axis = 1)
+        mode_cnt = np.zeros((len(classes)), dtype = int)
+        unique, counts = np.unique(pred_labels, return_counts = True)
+        for i, label in enumerate(unique):
+            mode_cnt[int(label)] = counts[i]
+        return mode_cnt
 
-def mode_of_argmax(y_pred):
-    mode_cnt = mode_count(y_pred)
-    return mode_cnt.argmax()
+    def mode_of_argmax(y_pred):
+        mode_cnt = mode_count(y_pred)
+        return mode_cnt.argmax()
 
-pt_level_data = {}
-x_slidename = [Path(x).name[:6] for x in test_ds.file_paths]
-for x_f, y_t, y_p in zip(x_slidename, test_data['y_true'], test_data['y_pred']):
-    if x_f not in pt_level_data:
-        pt_level_data[x_f] = {'y_true': y_t, 'y_pred': [], 'tiles_num': 0}
-    pt_level_data[x_f]['y_pred'].append(y_p)
-    pt_level_data[x_f]['tiles_num'] += 1
+    pt_level_data = {}
+    x_slidename = [Path(x).name[:6] for x in test_ds.file_paths]
+    for x_f, y_t, y_p in zip(x_slidename, test_data['y_true'], test_data['y_pred']):
+        if x_f not in pt_level_data:
+            pt_level_data[x_f] = {'y_true': y_t, 'y_pred': [], 'tiles_num': 0}
+        pt_level_data[x_f]['y_pred'].append(y_p)
+        pt_level_data[x_f]['tiles_num'] += 1
 
-for k, v in pt_level_data.items():
-    v['y_pred_weighted_ave'] = weighted_average(v['y_pred'])
-    v['y_pred_weighted_sum'] = weighted_sum(v['y_pred'])
-    v['mode_count'] = mode_count(v['y_pred'])
-    v['mode'] = mode_of_argmax(v['y_pred'])
+    for k, v in pt_level_data.items():
+        v['y_pred_weighted_ave'] = weighted_average(v['y_pred'])
+        v['y_pred_weighted_sum'] = weighted_sum(v['y_pred'])
+        v['mode_count'] = mode_count(v['y_pred'])
+        v['mode'] = mode_of_argmax(v['y_pred'])
 
-test_data['pt_level'] = pt_level_data
+    test_data['pt_level'] = pt_level_data
     
-with open(log_dir / 'test_data.json', 'w') as f:
-    json.dump(test_data, f, cls = NumpyEncoder)
-    
-# calculate metrics
-result_dict = {}
 
 # tile level
 f_name = f'Tile'
+method_list = [f_name]
 y_true = test_data['y_true'].argmax(axis = 1)
 y_pred = test_data['y_pred'].argmax(axis = 1)
 calculate_metrics(y_true, y_pred, f_name, result_dict, classes)
-draw_cm(y_true, y_pred, log_dir, best_epoch, f_name, result_dict, classes)
-draw_roc_curve(test_data['y_true'], test_data['y_pred'], log_dir, best_epoch, f_name, result_dict, classes)
+draw_cm(y_true, y_pred, log_dir, f_name, result_dict, classes)
+draw_roc_curve(test_data['y_true'], test_data['y_pred'], log_dir, f_name, result_dict, classes)
 
-# patient level, weighted average
-f_name = f'Patient_weighted_average'
-pt_temp = [(v['y_true'], v['y_pred_weighted_ave']) for k, v in test_data['pt_level'].items()]
-pt_y_true_wa, pt_y_pred_wa = zip(*pt_temp)
-y_true = np.array(pt_y_true_wa).argmax(axis = 1)
-y_pred = np.array(pt_y_pred_wa).argmax(axis = 1)
-calculate_metrics(y_true, y_pred, f_name, result_dict, classes)
-draw_cm(y_true, y_pred, log_dir, best_epoch, f_name, result_dict, classes)
-draw_roc_curve(np.array(pt_y_true_wa), np.array(pt_y_pred_wa), log_dir, best_epoch, f_name, result_dict, classes)
+if not args.tile_only:
+    method_list = ['Tile', 'Patient_weighted_average', 'Patient_weighted_sum', 'Patient_mode']
+    
+    # patient level, weighted average
+    f_name = f'Patient_weighted_average'
+    pt_temp = [(v['y_true'], v['y_pred_weighted_ave']) for k, v in test_data['pt_level'].items()]
+    pt_y_true_wa, pt_y_pred_wa = zip(*pt_temp)
+    y_true = np.array(pt_y_true_wa).argmax(axis = 1)
+    y_pred = np.array(pt_y_pred_wa).argmax(axis = 1)
+    calculate_metrics(y_true, y_pred, f_name, result_dict, classes)
+    draw_cm(y_true, y_pred, log_dir, f_name, result_dict, classes)
+    draw_roc_curve(np.array(pt_y_true_wa), np.array(pt_y_pred_wa), log_dir, f_name, result_dict, classes)
 
-# patient level, weighted sum
-f_name = f'Patient_weighted_sum'
-pt_temp = [(v['y_true'], v['y_pred_weighted_sum']) for k, v in test_data['pt_level'].items()]
-pt_y_true_ws, pt_y_pred_ws = zip(*pt_temp)
-y_true = np.array(pt_y_true_ws).argmax(axis = 1)
-y_pred = np.array(pt_y_pred_ws).argmax(axis = 1)
-calculate_metrics(y_true, y_pred, f_name, result_dict, classes)
-draw_cm(y_true, y_pred, log_dir, best_epoch, f_name, result_dict, classes)
-draw_roc_curve(np.array(pt_y_true_ws), np.array(pt_y_pred_ws), log_dir, best_epoch, f_name, result_dict, classes)
-''' omit because metrics (except ROC curves) do not change after normalization as in below
-# patient level, mode
-f_name = 'Patient_mode'
-pt_temp = [(v['y_true'], v['mode']) for k, v in test_data['pt_level'].items()]
-pt_y_true_mo, pt_y_pred_mo = zip(*pt_temp)
-y_true = np.array(pt_y_true_mo).argmax(axis = 1)
-y_pred = np.array(pt_y_pred_mo)
-calculate_metrics(y_true, y_pred, f_name, result_dict, classes)
-draw_cm(y_true, y_pred, log_dir, best_epoch, f_name, result_dict, classes)
-'''
-# patient level, mode count for roc curve
-f_name = f'Patient_mode'
-pt_temp = [(v['y_true'], v['mode_count']) for k, v in test_data['pt_level'].items()]
-pt_y_true_mo, pt_y_pred_mo = zip(*pt_temp)
-y_true = np.array(pt_y_true_mo).argmax(axis = 1)
-y_pred_mo = np.array(pt_y_pred_mo)
-y_pred_mo = y_pred_mo / y_pred_mo.sum(axis = 0, keepdims = 1)
-y_pred = np.array(pt_y_pred_mo).argmax(axis = 1)
-calculate_metrics(y_true, y_pred, f_name, result_dict, classes)
-draw_cm(y_true, y_pred, log_dir, best_epoch, f_name, result_dict, classes)
-draw_roc_curve(np.array(pt_y_true_mo), y_pred_mo, log_dir, best_epoch, f_name, result_dict, classes)
+    # patient level, weighted sum
+    f_name = f'Patient_weighted_sum'
+    pt_temp = [(v['y_true'], v['y_pred_weighted_sum']) for k, v in test_data['pt_level'].items()]
+    pt_y_true_ws, pt_y_pred_ws = zip(*pt_temp)
+    y_true = np.array(pt_y_true_ws).argmax(axis = 1)
+    y_pred = np.array(pt_y_pred_ws).argmax(axis = 1)
+    calculate_metrics(y_true, y_pred, f_name, result_dict, classes)
+    draw_cm(y_true, y_pred, log_dir, f_name, result_dict, classes)
+    draw_roc_curve(np.array(pt_y_true_ws), np.array(pt_y_pred_ws), log_dir, f_name, result_dict, classes)
+    ''' omit because metrics (except ROC curves) do not change after normalization as in below
+    # patient level, mode
+    f_name = 'Patient_mode'
+    pt_temp = [(v['y_true'], v['mode']) for k, v in test_data['pt_level'].items()]
+    pt_y_true_mo, pt_y_pred_mo = zip(*pt_temp)
+    y_true = np.array(pt_y_true_mo).argmax(axis = 1)
+    y_pred = np.array(pt_y_pred_mo)
+    calculate_metrics(y_true, y_pred, f_name, result_dict, classes)
+    draw_cm(y_true, y_pred, log_dir, f_name, result_dict, classes)
+    '''
+    # patient level, mode count for roc curve
+    f_name = f'Patient_mode'
+    pt_temp = [(v['y_true'], v['mode_count']) for k, v in test_data['pt_level'].items()]
+    pt_y_true_mo, pt_y_pred_mo = zip(*pt_temp)
+    y_true = np.array(pt_y_true_mo).argmax(axis = 1)
+    y_pred_mo = np.array(pt_y_pred_mo)
+    y_pred_mo = y_pred_mo / y_pred_mo.sum(axis = 1, keepdims = 1)
+    y_pred = np.array(pt_y_pred_mo).argmax(axis = 1)
+    calculate_metrics(y_true, y_pred, f_name, result_dict, classes)
+    draw_cm(y_true, y_pred, log_dir, f_name, result_dict, classes)
+    draw_roc_curve(np.array(pt_y_true_mo), y_pred_mo, log_dir, f_name, result_dict, classes)
 
+with open(log_dir / 'test_data.json', 'w') as f:
+    json.dump(test_data, f, cls = NumpyEncoder)
 with open(log_dir / 'test_metrics.json', 'w') as f:
     json.dump(result_dict, f, cls = NumpyEncoder)
 
-method_list = ['Tile', 'Patient_weighted_average', 'Patient_weighted_sum', 'Patient_mode']
 metric_list = ['accuracy', 'balanced_accuracy', 'f1_macro', 'matthews_CC', 'cohen_kappa', 'auc_micro', 'auc_macro']
 result_arr = np.zeros((len(method_list), len(metric_list)))
 for i, method in enumerate(method_list):
