@@ -41,8 +41,11 @@ parser.add_argument("dest_dir", help = 'directory to store tiled images, folders
 parser.add_argument("--mode", choices = ['new', 'retile'], help = 'new to tile WSIs not recorded in any .txt file; retile to tile WSIs recorded in fail.txt')
 args = parser.parse_args()
 
-parent_dir = Path('../') / args.source_dir
-destination_dir = Path('../') / args.dest_dir
+parent_dir = Path(args.source_dir)
+assert parent_dir.exists(), f"Source directory {parent_dir} does not exist."
+destination_dir = Path(args.dest_dir)
+if not destination_dir.exists():
+    os.makedirs(destination_dir)
 log_file = destination_dir / 'log.txt'
 if not log_file.exists():
     _ = open(log_file, 'w')
@@ -135,8 +138,4 @@ for slide_id in slide_list:
             print(f'### Failed because of {e} ###')
     
     end_time = time.time()
-    if end_time - start_time > 10800:
-        job_name = os.environ['SLURM_JOB_NAME']
-        command = f'sbatch -A yu_ky98 --job-name={job_name} -p short -t 0-03:59 -n 1 setup.sh python WSI_OpenSlide_V4.py {args.source_dir} {args.dest_dir} --mode {args.mode}'
-        report = subprocess.check_call(command, shell = True, executable = '/bin/bash', text = True)
-        exit()
+    print(f'### Time elapsed: {end_time - start_time} seconds ###')
