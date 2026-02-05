@@ -1,0 +1,47 @@
+name: BM_cytology
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core Python
+  - python=3.10.0
+  - pip
+  
+  # CUDA for GPU support (TensorFlow 2.10 compatible)
+  - cudatoolkit=11.8
+  - cudnn=8.8
+  
+  # WSI processing
+  - openslide
+  
+  # Python packages via pip
+  - pip:
+      # Deep Learning
+      - tensorflow==2.10.0
+      - tensorflow-addons==0.23.0
+      - keras==2.10.0
+      
+      # Scientific Computing
+      - numpy==1.26.4  # TF 2.10 requires numpy<2.0
+      - scipy==1.15.3
+      - pandas==2.3.0
+      - scikit-learn==1.7.0
+      
+      # Visualization
+      - matplotlib==3.10.3
+      
+      # Image Processing
+      - opencv-python==4.11.0.86
+      - openslide-python==1.4.2
+      - pillow==11.2.1
+      
+      # ROC Analysis (patched for scipy 1.15+)
+      - git+https://github.com/hirsch-lab/roc-utils.git
+      
+      # Deep Learning Tools
+      - timm==0.9.8
+      - h5py==3.14.0
+      
+      # Utilities
+      - tqdm==4.67.1
+      - pyyaml==6.0.2

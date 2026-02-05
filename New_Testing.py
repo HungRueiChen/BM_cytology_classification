@@ -69,10 +69,10 @@ assert test_dir.exists()
 if args.model_path:
     assert (model_path := Path(args.model_path)).exists()
 else:
-    assert (csv_path := Path(exp_dir / 'log.csv')).exists()
+    assert (csv_path := Path(args.exp_dir) / 'log.csv').exists()
     log_df = pd.read_csv(csv_path, index_col = 'epoch')
     best_epoch = log_df['val_accuracy'].idxmax() + 1
-    model_path = Path(exp_dir) / f'best_e{best_epoch}'
+    model_path = Path(args.exp_dir) / f'best_e{best_epoch}'
     assert model_path.exists()
 print(f'Loading model: {model_path}')
 model = load_model(model_path)
