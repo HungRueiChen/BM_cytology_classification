@@ -49,6 +49,8 @@ parser.add_argument("--fine_tune_epochs", type=int, default=90,
                    help='Epochs for fine-tune stage (train all layers)')
 parser.add_argument("--high_wt", type=float, default=1.0,
                    help='Multiply class weights > 1 by this factor')
+parser.add_argument("--log_dir", default=None,
+                   help='Directory to store logs and models. Defaults to ~/16tb2/BM_cytology_classification/stage_1_ablation/<exp_name>')
 args = parser.parse_args()
 
 # JSON encoder for special data types
@@ -112,7 +114,10 @@ fine_tune_lr = freeze_lr * 0.1
 fc_node = 256
 
 # Create log directory
-log_dir = Path('~/16tb2/BM_cytology_classification/stage_1_ablation').expanduser() / args.exp_name
+if args.log_dir:
+    log_dir = Path(args.log_dir).expanduser()
+else:
+    log_dir = Path('~/16tb2/BM_cytology_classification/stage_1_ablation').expanduser() / args.exp_name
 log_dir.mkdir(parents=True, exist_ok=True)
 
 # Model establishment & training configuration

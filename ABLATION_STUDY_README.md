@@ -6,35 +6,64 @@ This guide explains how to use the ablation study scripts to compare quality-bas
 
 ## Scripts Created
 
-### 1. Random Tile Selection Script
+### 1. Tile Selection Script (Random & Quality-Based)
 **File**: [`4_choose_200_random_ROIs_single_wsi.py`](file:///home/user/16tb2/BM_cytology_classification/BM_cytology_classification/4_choose_200_random_ROIs_single_wsi.py)
 
-Directly tiles WSI files using OpenSlide and randomly selects 200 valid tiles (excluding background).
+Directly tiles WSI files using OpenSlide and selects 200 tiles using either random or quality-based selection.
 
 **Key Features**:
+- **Dual Mode Support**: Random selection or quality-based selection
 - Tiles WSI files (.mrxs) directly using OpenSlide
-- Filters out background tiles (all-white or all-black corners)
-- Randomly samples from valid tiles only
+- Filters out background tiles (all-white or all-black corners) in random mode
+- Uses quality scores from CSV files in quality mode
 - Saves only the selected 200 tiles (no intermediate storage)
 - Memory efficient - processes one WSI at a time
+
+**Selection Strategies**:
+- **Random Mode**: Randomly samples from valid (non-background) tiles
+- **Quality Mode**: 
+  - Prefers tiles with quality score ≥ 0.8
+  - Falls back to 0.5-0.8 range if insufficient high-quality tiles
+  - Reads quality scores from CSV files
 
 **Usage Examples**:
 
 ```bash
-# Process a single WSI
+# Random selection (default)
 python 4_choose_200_random_ROIs_single_wsi.py \
+    --mode random \
     --slide_id TV0001 \
     --label ALL \
     --group training \
     --wsi_source_dir ../Bone_marrow_cytology_WSI \
     --dest_parent_dir ../Final_BM_cytology_all_200_random
 
-# Process all WSIs from cohort JSON
+# Quality-based selection
 python 4_choose_200_random_ROIs_single_wsi.py \
+    --mode quality \
+    --slide_id TV0001 \
+    --label ALL \
+    --group training \
+    --wsi_source_dir ../Bone_marrow_cytology_WSI \
+    --quality_csv_dir ../BM_cytology_tile_select/0523_VGG16_20e_0001_then_180e_00001_SGD/all_probs \
+    --dest_parent_dir ../Final_BM_cytology_all_200_quality
+
+# Process all WSIs from cohort JSON (random mode)
+python 4_choose_200_random_ROIs_single_wsi.py \
+    --mode random \
     --process_all \
     --cohort_json ../Final_BM_cytology_all_200/1202_cohort.json \
     --wsi_source_dir ../Bone_marrow_cytology_WSI \
     --dest_parent_dir ../Final_BM_cytology_all_200_random
+
+# Process all WSIs from cohort JSON (quality mode)
+python 4_choose_200_random_ROIs_single_wsi.py \
+    --mode quality \
+    --process_all \
+    --cohort_json ../Final_BM_cytology_all_200/1202_cohort.json \
+    --wsi_source_dir ../Bone_marrow_cytology_WSI \
+    --quality_csv_dir ../BM_cytology_tile_select/0523_VGG16_20e_0001_then_180e_00001_SGD/all_probs \
+    --dest_parent_dir ../Final_BM_cytology_all_200_quality
 ```
 
 ### 2. Pipeline Orchestration Script

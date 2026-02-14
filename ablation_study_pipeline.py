@@ -59,7 +59,7 @@ def random_tile_selection(cohort_json, wsi_source_dir, dest_parent_dir, num_tile
     
     run_command(cmd, "Step 1: Random Tile Selection (Tiling + Selection)")
 
-def train_classification_model(dataset_dir, exp_name, epochs=100, freeze_epochs=None, batch_size=8, learning_rate=0.001):
+def train_classification_model(dataset_dir, exp_name, epochs=100, freeze_epochs=None, batch_size=8, learning_rate=0.001, log_dir=None):
     """
     Step 2: Train disease classification model on randomly selected tiles.
     Uses simplified Ablation_Classification.py (DenseNet121 only, no SLURM).
@@ -78,6 +78,9 @@ def train_classification_model(dataset_dir, exp_name, epochs=100, freeze_epochs=
         "--freeze_epochs", str(freeze_epochs),
         "--fine_tune_epochs", str(fine_tune_epochs)
     ]
+    
+    if log_dir:
+        cmd.extend(["--log_dir", log_dir])
     
     run_command(cmd, "Step 2: Training Classification Model (DenseNet121)")
 
@@ -141,12 +144,14 @@ def main():
                        help="Experiment name (auto-generated if not provided)")
     parser.add_argument("--epochs", type=int, default=100,
                        help="Total number of training epochs")
-    parser.add_argument("--freeze_epochs", default=None,
+    parser.add_argument("--freeze_epochs", type=int, default=None,
                        help="Number of freezing epochs")
     parser.add_argument("--batch_size", type=int, default=8,
                        help="Batch size for training/testing")
     parser.add_argument("--learning_rate", type=float, default=0.001,
                        help="Initial learning rate")
+    parser.add_argument("--log_dir", default=None,
+                       help="Directory to store training logs and models")
     
     # Testing arguments
     parser.add_argument("--test_dataset", default="../Final_BM_cytology_all_200_random/test",
@@ -196,7 +201,8 @@ def main():
                 epochs=args.epochs,
                 freeze_epochs=args.freeze_epochs,
                 batch_size=args.batch_size,
-                learning_rate=args.learning_rate
+                learning_rate=args.learning_rate,
+                log_dir=args.log_dir
             )
         
         # Step 3: Test model

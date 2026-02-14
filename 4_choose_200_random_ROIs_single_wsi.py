@@ -1,10 +1,12 @@
 """
-Random Tile Selection for Ablation Study
-Directly tiles WSI files using OpenSlide and randomly selects 200 valid tiles.
+Tile Selection for Ablation Study
+Supports both random and quality-based tile selection modes.
+Directly tiles WSI files using OpenSlide and selects 200 tiles.
 Processes one WSI at a time to manage storage constraints.
 """
 
 import numpy as np
+import pandas as pd
 import random
 import cv2
 import os
@@ -112,10 +114,122 @@ def tile_and_select_random(slide_path, num_tiles=200, excluded_tiles=None):
     
     return selected_tiles
 
-def process_single_wsi(slide_id, label, group, wsi_source_dir, dest_parent_dir, 
-                       num_tiles=200, excluded_tiles=None):
+def parse_quality_csv_with_coords(csv_path, slide_id, excluded_tiles=None):
     """
-    Process a single WSI: tile it, select random tiles, and save only selected ones.
+    Parse quality score CSV file and extract tile information with coordinates.
+    
+    Args:
+        csv_path: Path to the quality score CSV file
+        slide_id: WSI identifier for extracting tile coordinates from filenames
+        excluded_tiles: List of tile names to exclude
+        
+    Returns:
+        List of tuples: (tile_name, x, y, quality_score)
+    """
+    if excluded_tiles is None:
+        excluded_tiles = []
+    
+    df = pd.read_csv(csv_path)
+    tile_data = []
+    
+    for _, row in df.iterrows():
+        # Extract tile name from path
+        tile_path = Path(row['Path'])
+        tile_name = tile_path.name
+        
+        # Skip excluded tiles
+        if tile_name in excluded_tiles:
+            continue
+        
+        # Extract coordinates from tile name: {slide_id}_{x}_{y}.png
+        try:
+            parts = tile_name.replace('.png', '').split('_')
+            # Handle slide IDs that may contain underscores
+            # Format: slideID_x_y, where x and y are the last two parts
+            x = int(parts[-2])
+            y = int(parts[-1])
+            quality_score = row['Prob']
+            tile_data.append((tile_name, x, y, quality_score))
+        except (ValueError, IndexError) as e:
+            print(f"Warning: Could not parse coordinates from {tile_name}: {e}")
+            continue
+    
+    return tile_data
+
+def tile_and_select_by_quality(slide_path, csv_path, num_tiles=200, excluded_tiles=None):
+    """
+    Select tiles based on quality scores from CSV, then retrieve images from WSI.
+    Selection strategy:
+    - If ≥200 tiles with prob ≥ 0.8: randomly sample 200 from them
+    - If <200 tiles with prob ≥ 0.8: take all ≥0.8 + sample remaining from 0.5-0.8 range
+    
+    Args:
+        slide_path: Path to the .mrxs WSI file
+        csv_path: Path to quality score CSV file
+        num_tiles: Number of tiles to select
+        excluded_tiles: List of tile names to exclude
+        
+    Returns:
+        List of tuples: (tile_name, tile_image, coordinates)
+    """
+    if excluded_tiles is None:
+        excluded_tiles = []
+    
+    slide_id = slide_path.stem
+    
+    # Parse CSV to get all tiles with quality scores and coordinates
+    print(f"Reading quality scores from CSV...")
+    tile_data = parse_quality_csv_with_coords(csv_path, slide_id, excluded_tiles)
+    print(f"Found {len(tile_data)} tiles with quality scores")
+    
+    # Separate tiles by quality threshold
+    high_quality = [(name, x, y, score) for name, x, y, score in tile_data if score >= 0.8]
+    medium_quality = [(name, x, y, score) for name, x, y, score in tile_data if 0.5 <= score < 0.8]
+    
+    print(f"High quality (≥0.8): {len(high_quality)} tiles")
+    print(f"Medium quality (0.5-0.8): {len(medium_quality)} tiles")
+    
+    # Select tiles based on quality strategy
+    if len(high_quality) >= num_tiles:
+        # Randomly sample from high quality tiles
+        selected_data = random.sample(high_quality, num_tiles)
+        print(f"Selected {num_tiles} tiles from high quality pool")
+    else:
+        # Take all high quality + sample from medium quality
+        selected_data = high_quality.copy()
+        remaining = num_tiles - len(high_quality)
+        
+        if len(medium_quality) >= remaining:
+            selected_data.extend(random.sample(medium_quality, remaining))
+            print(f"Selected {len(high_quality)} high quality + {remaining} medium quality tiles")
+        else:
+            selected_data.extend(medium_quality)
+            print(f"Warning: Only {len(selected_data)} tiles available (requested {num_tiles})")
+    
+    # Retrieve images directly using read_region with the coordinates from CSV.
+    # The CSV coordinates are level-0 pixel positions from the original DZG tiling.
+    # Using read_region avoids any mismatch from DZG environmental differences.
+    TILE_SIZE = 512  # matches original DeepZoomGenerator(slide, 512, 256, True)
+    print(f"Retrieving images for {len(selected_data)} selected tiles from WSI using read_region...")
+    
+    slide = openslide.OpenSlide(str(slide_path))
+    
+    selected_tiles = []
+    for tile_name, x, y, quality in selected_data:
+        try:
+            tile_image = np.array(
+                slide.read_region((x, y), 0, (TILE_SIZE, TILE_SIZE)).convert('RGB')
+            )
+            selected_tiles.append((tile_name, tile_image, (x, y)))
+        except Exception as e:
+            print(f"Error retrieving tile {tile_name}: {e}")
+    
+    return selected_tiles
+
+def process_single_wsi(slide_id, label, group, wsi_source_dir, dest_parent_dir, 
+                       num_tiles=200, excluded_tiles=None, mode='random', quality_csv_dir=None):
+    """
+    Process a single WSI: tile it, select tiles (random or quality-based), and save selected ones.
     
     Args:
         slide_id: WSI identifier
@@ -125,6 +239,8 @@ def process_single_wsi(slide_id, label, group, wsi_source_dir, dest_parent_dir,
         dest_parent_dir: Destination parent directory
         num_tiles: Number of tiles to select
         excluded_tiles: List of tile names to exclude
+        mode: Selection mode ('random' or 'quality')
+        quality_csv_dir: Directory containing quality score CSV files (required for quality mode)
         
     Returns:
         List of selected tile names
@@ -139,10 +255,25 @@ def process_single_wsi(slide_id, label, group, wsi_source_dir, dest_parent_dir,
     dest_dir = Path(dest_parent_dir) / group / label
     os.makedirs(dest_dir, exist_ok=True)
     
-    print(f"\nProcessing {slide_id}...")
+    print(f"\nProcessing {slide_id} in {mode} mode...")
     
-    # Tile and randomly select
-    selected_tiles = tile_and_select_random(slide_path, num_tiles, excluded_tiles)
+    # Select tiles based on mode
+    if mode == 'quality':
+        if quality_csv_dir is None:
+            print(f"Error: quality_csv_dir is required for quality mode")
+            return []
+        
+        # Load quality scores from CSV
+        csv_path = Path(quality_csv_dir) / f'{slide_id}.csv'
+        if not csv_path.exists():
+            print(f"Error: Quality CSV file {csv_path} does not exist")
+            return []
+        
+        selected_tiles = tile_and_select_by_quality(slide_path, csv_path, num_tiles, excluded_tiles)
+    else:
+        # Random mode
+        selected_tiles = tile_and_select_random(slide_path, num_tiles, excluded_tiles)
+    
     selected_tile_names = []
     
     # Save selected tiles
@@ -163,9 +294,11 @@ def process_single_wsi(slide_id, label, group, wsi_source_dir, dest_parent_dir,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Tile WSI and randomly select 200 tiles for ablation study",
+        description="Tile WSI and select 200 tiles (random or quality-based) for ablation study",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
+    parser.add_argument("--mode", choices=['random', 'quality'], default='random',
+                       help="Selection mode: random or quality-based")
     parser.add_argument("--slide_id", help="WSI identifier (e.g., TV0001)")
     parser.add_argument("--label", help="Disease label (ALL, AML_APL, CML, Lymphoma_CLL, MM)")
     parser.add_argument("--group", help="Dataset split (training, validation, test)")
@@ -174,13 +307,19 @@ def main():
     parser.add_argument("--dest_parent_dir", default="../Final_BM_cytology_all_200_random",
                         help="Destination parent directory for selected tiles")
     parser.add_argument("--num_tiles", type=int, default=200,
-                        help="Number of tiles to randomly select")
+                        help="Number of tiles to select")
+    parser.add_argument("--quality_csv_dir", default=None,
+                        help="Directory containing quality score CSV files (required for quality mode)")
     parser.add_argument("--cohort_json", default=None,
                         help="Path to cohort JSON file for batch processing")
     parser.add_argument("--process_all", action="store_true",
                         help="Process all WSIs from cohort JSON")
     
     args = parser.parse_args()
+    
+    # Validate arguments
+    if args.mode == 'quality' and args.quality_csv_dir is None:
+        parser.error("--quality_csv_dir is required when using --mode quality")
     
     # Special excluded tiles (from original script)
     excluded_list = ['TV0577_68860_175674.png', 'TV0577_67836_167226.png']
@@ -209,13 +348,16 @@ def main():
                         wsi_source_dir=args.wsi_source_dir,
                         dest_parent_dir=args.dest_parent_dir,
                         num_tiles=args.num_tiles,
-                        excluded_tiles=excluded
+                        excluded_tiles=excluded,
+                        mode=args.mode,
+                        quality_csv_dir=args.quality_csv_dir
                     )
                     
                     cohort_with_tiles[group][label]['tiles'].extend(selected_tiles)
         
         # Save cohort with tile information
-        output_json = Path(args.dest_parent_dir) / '1202_cohort_tiles_random.json'
+        suffix = 'quality' if args.mode == 'quality' else 'random'
+        output_json = Path(args.dest_parent_dir) / f'1202_cohort_tiles_{suffix}.json'
         with open(output_json, 'w') as f:
             json.dump(cohort_with_tiles, f, indent=2)
         print(f"\nSaved cohort information to {output_json}")
@@ -232,7 +374,9 @@ def main():
             wsi_source_dir=args.wsi_source_dir,
             dest_parent_dir=args.dest_parent_dir,
             num_tiles=args.num_tiles,
-            excluded_tiles=excluded
+            excluded_tiles=excluded,
+            mode=args.mode,
+            quality_csv_dir=args.quality_csv_dir
         )
         
         print(f"\nSelected {len(selected_tiles)} tiles for {args.slide_id}")
